@@ -1,0 +1,18 @@
+# intelliJ
+.idea/
+*.iml
+
+# gdb
+.gdb_history
+
+# binaries
+client
+server
+
+# cmake
+cmake-build-debug/
+cmake_install.cmake
+CMakeCache.txt
+CMakeFiles/
+*.cbp
+Makefile
