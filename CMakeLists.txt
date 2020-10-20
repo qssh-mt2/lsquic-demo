@@ -21,11 +21,11 @@ INCLUDE_DIRECTORIES(lsquic/include)
 INCLUDE_DIRECTORIES(lsquic/src/liblsquic)       # For lsquic_xxhash.h
 ADD_SUBDIRECTORY(lsquic/src/liblsquic)
 
-#INCLUDE_DIRECTORIES(libev)
+INCLUDE_DIRECTORIES(libev)
 add_executable(client client.c net.c net.h lsquic_utils.c lsquic_utils.h)
 add_executable(server server.c net.c net.h lsquic_utils.c lsquic_utils.h)
 
-SET(LIBS lsquic crypto ssl z m)
+SET(LIBS lsquic crypto ssl z m ev)
 IF(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # If using older glibc, need to link with -lrt.  See clock_getres(2).
     EXECUTE_PROCESS(
