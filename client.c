@@ -2,9 +2,7 @@
 #include <lsquic.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <openssl/ssl.h>
-#include <openssl/crypto.h>
+#include <unistd.h>
 
 #include "ev.h"
 #include "net.h"
@@ -29,6 +27,7 @@ typedef struct State {
     struct sockaddr_storage local_sas;
     lsquic_engine_t *engine;
     lsquic_conn_t *conn;
+    lsquic_stream_t *stream;
 
     // msg to send
     char *buf;
@@ -49,9 +48,6 @@ const struct lsquic_stream_if stream_if = {
 
 static int send_packets_out(void *ctx, const struct lsquic_out_spec *specs, unsigned n_specs)
 {
-    printf("on packets send out\n");
-    fflush(stdout);
-
     struct msghdr msg;
     int *sockfd;
     unsigned n;
@@ -75,8 +71,6 @@ static int send_packets_out(void *ctx, const struct lsquic_out_spec *specs, unsi
 }
 
 static void read_sock(EV_P_ ev_io *w, int revents) {
-    printf("read sock\n");
-    fflush(stdout);
     State *state = w->data;
     ssize_t nread;
     struct sockaddr_storage peer_sas;
@@ -129,7 +123,6 @@ void process_conns(State *state) {
 static lsquic_conn_ctx_t *on_new_conn_cb(void *ea_stream_if_ctx, lsquic_conn_t *conn) {
     printf("On new connection\n");
     State *state = ea_stream_if_ctx;
-    lsquic_conn_make_stream(conn);
     fflush(stdout);
     return (void *) state;
 }
@@ -152,7 +145,7 @@ static void on_hsk_done(lsquic_conn_t *conn, enum lsquic_hsk_status status) {
         case LSQ_HSK_RESUMED_OK:
             printf("handshake successful, start stdin watcher\n");
             fflush(stdout);
-            ev_io_start(state->loop, &state->stdin_watcher);
+            lsquic_conn_make_stream(state->conn);
             break;
         default:
             printf("handshake failed\n");
@@ -165,39 +158,41 @@ static lsquic_stream_ctx_t *on_new_stream_cb(void *ea_stream_if_ctx, lsquic_stre
     printf("On new stream\n");
     fflush(stdout);
     State *state = ea_stream_if_ctx;
-    lsquic_stream_wantwrite(stream, 1);
+    state->stream = stream;
+    ev_io_start(state->loop, &state->stdin_watcher);
     return (void *) state;
 }
 
 static void on_read_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
-    unsigned char buf[256];
+    lsquic_conn_t *conn = lsquic_stream_conn(stream);
+    State *state = (void *) lsquic_conn_get_ctx(conn);
+
+    unsigned char buf[256] = {0};
 
     ssize_t nr = lsquic_stream_read(stream, buf, sizeof(buf));
 
-    printf("Got data: %s\n", buf);
+    buf[nr] = '\0';
+    printf("recv %zd bytes: %s\n", nr, buf);
 
-    if (nr == 0) /* EOF */ {
-        lsquic_stream_shutdown(stream, 0);
-        lsquic_stream_wantwrite(stream, 1); /* Want to reply */
-    }
+    lsquic_stream_wantread(stream, 0);
+    ev_io_start(state->loop, &state->stdin_watcher);
 }
 
 static void on_write_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
-    printf("on write\n");
-    fflush(stdout);
     lsquic_conn_t *conn = lsquic_stream_conn(stream);
     State *state = (void *) lsquic_conn_get_ctx(conn);
 
     lsquic_stream_write(stream, state->buf, state->size);
+    lsquic_stream_wantwrite(stream, 0);
+    lsquic_stream_flush(stream);
     lsquic_stream_wantread(stream, 1);
 }
 
 void read_stdin(EV_P_ ev_io *w, int revents) {
     State *state = w->data;
-    ev_io_stop(state->loop, w);
     char *lineptr = NULL;
     size_t n = 0;
-    ssize_t read_bytes = getline(&lineptr, &n, 0);
+    ssize_t read_bytes = getline(&lineptr, &n, stdin);
     if (read_bytes == -1) {
         printf("getline error\n");
         fflush(stdout);
@@ -205,7 +200,8 @@ void read_stdin(EV_P_ ev_io *w, int revents) {
     }
     state->buf = lineptr;
     state->size = read_bytes;
-    lsquic_conn_make_stream(state->conn);
+    ev_io_stop(state->loop, w);
+    lsquic_stream_wantwrite(state->stream, 1);
     process_conns(state);
 }
 
@@ -232,7 +228,7 @@ int main(int argc, char **argv) {
         fflush(stdout);
         exit(EXIT_FAILURE);
     }
-    init_logger("info");
+//    init_logger("info");
 
 
     struct lsquic_engine_api engine_api = {

@@ -12,11 +12,15 @@
 #include "lsquic_utils.h"
 
 
-static lsquic_conn_ctx_t *on_new_conn_cb (void *ea_stream_if_ctx, lsquic_conn_t *conn);
-static void on_conn_closed_cb (lsquic_conn_t *conn);
-static lsquic_stream_ctx_t *on_new_stream_cb (void *ea_stream_if_ctx, lsquic_stream_t *stream);
-static void on_read_cb (lsquic_stream_t *stream, lsquic_stream_ctx_t *h);
-static void on_write_cb (lsquic_stream_t *stream, lsquic_stream_ctx_t *h);
+static lsquic_conn_ctx_t *on_new_conn_cb(void *ea_stream_if_ctx, lsquic_conn_t *conn);
+
+static void on_conn_closed_cb(lsquic_conn_t *conn);
+
+static lsquic_stream_ctx_t *on_new_stream_cb(void *ea_stream_if_ctx, lsquic_stream_t *stream);
+
+static void on_read_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h);
+
+static void on_write_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h);
 
 typedef struct State {
     // event loop
@@ -31,6 +35,10 @@ typedef struct State {
 
     // SSL
     SSL_CTX *ssl_ctx;
+
+    // response
+    char *response;
+    int size;
 } State;
 
 void process_conns(State *state);
@@ -45,11 +53,7 @@ const struct lsquic_stream_if stream_if = {
 };
 
 
-static int send_packets_out (void *ctx, const struct lsquic_out_spec *specs, unsigned n_specs)
-{
-    printf("on packets send out\n");
-    fflush(stdout);
-
+static int send_packets_out(void *ctx, const struct lsquic_out_spec *specs, unsigned n_specs) {
     struct msghdr msg;
     int *sockfd;
     unsigned n;
@@ -57,12 +61,11 @@ static int send_packets_out (void *ctx, const struct lsquic_out_spec *specs, uns
     memset(&msg, 0, sizeof(msg));
     sockfd = (int *) ctx;
 
-    for (n = 0; n < n_specs; ++n)
-    {
-        msg.msg_name       = (void *) specs[n].dest_sa;
-        msg.msg_namelen    = sizeof(struct sockaddr_in);
-        msg.msg_iov        = specs[n].iov;
-        msg.msg_iovlen     = specs[n].iovlen;
+    for (n = 0; n < n_specs; ++n) {
+        msg.msg_name = (void *) specs[n].dest_sa;
+        msg.msg_namelen = sizeof(struct sockaddr_in);
+        msg.msg_iov = specs[n].iov;
+        msg.msg_iovlen = specs[n].iovlen;
         if (sendmsg(*sockfd, &msg, 0) < 0) {
             perror("sendmsg");
             break;
@@ -72,50 +75,61 @@ static int send_packets_out (void *ctx, const struct lsquic_out_spec *specs, uns
     return (int) n;
 }
 
-static lsquic_conn_ctx_t *on_new_conn_cb (void *ea_stream_if_ctx, lsquic_conn_t *conn) {
+static lsquic_conn_ctx_t *on_new_conn_cb(void *ea_stream_if_ctx, lsquic_conn_t *conn) {
     printf("On new connection\n");
-    State *state = ea_stream_if_ctx;
-    lsquic_conn_make_stream(conn);
     fflush(stdout);
+    State *state = ea_stream_if_ctx;
     return (void *) state;
 }
 
-static void on_conn_closed_cb (lsquic_conn_t *conn) {
+static void on_conn_closed_cb(lsquic_conn_t *conn) {
     printf("On connection close\n");
     fflush(stdout);
 }
 
-static lsquic_stream_ctx_t *on_new_stream_cb (void *ea_stream_if_ctx, lsquic_stream_t *stream) {
+static lsquic_stream_ctx_t *on_new_stream_cb(void *ea_stream_if_ctx, lsquic_stream_t *stream) {
     printf("On new stream\n");
     fflush(stdout);
     lsquic_stream_wantread(stream, 1);
     return NULL;
 }
 
-static void on_read_cb (lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
-    printf("Got data \n");
-    fflush(stdout);
-    unsigned char buf[256];
+static void on_read_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
+    lsquic_conn_t *conn = lsquic_stream_conn(stream);
+    State *state = (void *) lsquic_conn_get_ctx(conn);
 
+    unsigned char buf[256] = {0};
     ssize_t nr = lsquic_stream_read(stream, buf, sizeof(buf));
+    buf[nr] = '\0';
+    printf("recv %zd bytes: %s\n", nr, buf);
+    fflush(stdout);
 
+    char *response = (char *) malloc(sizeof(char) * nr + 2);
+    char *server_prefix = "s:";
 
-    if (nr == 0) /* EOF */ {
-        lsquic_stream_shutdown(stream, 0);
-        lsquic_stream_wantwrite(stream, 1); /* Want to reply */
-    }
+    int response_size = snprintf(response, nr + strlen(server_prefix), "%s%s", server_prefix, buf);
+    state->response = response;
+    state->size = response_size;
+
+    lsquic_stream_wantread(stream, 0);
+    lsquic_stream_wantwrite(stream, 1);
 }
 
-static void on_write_cb (lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
-    printf("on write\n");
-    fflush(stdout);
-    char *buf = "Hello from client";
-    lsquic_stream_write(stream, buf, strlen(buf));
+static void on_write_cb(lsquic_stream_t *stream, lsquic_stream_ctx_t *h) {
+    lsquic_conn_t *conn = lsquic_stream_conn(stream);
+    State *state = (void *) lsquic_conn_get_ctx(conn);
+
+    lsquic_stream_write(stream, state->response, state->size);
+    lsquic_stream_wantwrite(stream, 0);
+    lsquic_stream_wantread(stream, 1);
+    lsquic_stream_flush(stream);
 }
 
 
 SSL_CTX *ssl_ctx;
+
 struct ssl_ctx_st *get_ssl_ctx(void *peer_ctx) {
+    // TODO pass ssl_ctx in peer_ctx
     return ssl_ctx;
 }
 
@@ -137,14 +151,12 @@ void create_ssl_ctx(State *state) {
     state->ssl_ctx = ssl_ctx;
 }
 
-static void read_sock (EV_P_ ev_io *w, int revents) {
-    printf("read sock\n");
-    fflush(stdout);
+static void read_sock(EV_P_ ev_io *w, int revents) {
     State *state = w->data;
     ssize_t nread;
     struct sockaddr_storage peer_sas;
     unsigned char buf[0x1000];
-    struct iovec vec[1] = {{ buf, sizeof(buf) }};
+    struct iovec vec[1] = {{buf, sizeof(buf)}};
 
     struct msghdr msg = {
             .msg_name       = &peer_sas,
@@ -194,7 +206,7 @@ void create_event_loop(State *state) {
     state->sock_watcher.data = state;
     state->conn_watcher.data = state;
     ev_io_init (&state->sock_watcher, read_sock, state->sockfd, EV_READ);
-    ev_io_start (state->loop, &state->sock_watcher);
+    ev_io_start(state->loop, &state->sock_watcher);
     ev_init(&state->conn_watcher, process_conns_cb);
 }
 
@@ -209,7 +221,7 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    init_logger("info");
+//    init_logger("info");
 
     struct lsquic_engine_api engine_api = {
             .ea_packets_out     = send_packets_out,
@@ -221,7 +233,7 @@ int main(int argc, char **argv) {
 
     state.engine = lsquic_engine_new(LSENG_SERVER, &engine_api);
 
-    ev_run (state.loop, 0);
+    ev_run(state.loop, 0);
 
     lsquic_global_cleanup();
 
