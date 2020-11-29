@@ -228,7 +228,7 @@ int main(int argc, char **argv) {
         fflush(stdout);
         exit(EXIT_FAILURE);
     }
-//    init_logger("info");
+    init_logger("info");
 
 
     struct lsquic_engine_api engine_api = {

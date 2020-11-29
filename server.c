@@ -221,7 +221,7 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-//    init_logger("info");
+    init_logger("info");
 
     struct lsquic_engine_api engine_api = {
             .ea_packets_out     = send_packets_out,
